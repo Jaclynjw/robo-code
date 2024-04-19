@@ -8,22 +8,30 @@ from geometry_msgs.msg import Twist
 class RobotController:
     def __init__(self):
         self.cmd_vel_pub = rospy.Publisher('cmd_vel', Twist, queue_size=1)
+        self.distance_target = 0.5  # 目标距离
+        self.current_distance = 0.0  # 当前已移动距离
+        self.moving = False  # 是否正在移动
 
-    def move_forward(self, distance, speed=0.1):
-        """Sends a simple motion command to move forward a specified distance."""
-        move_time = distance / speed
-        twist = Twist()
-        twist.linear.x = speed
-        rate = rospy.Rate(10)  # 10 Hz
-        start_time = rospy.Time.now()
+    def move_forward(self):
+        if not self.moving:  # 如果当前不在移动
+            self.moving = True
+            self.current_distance = 0.0  # 重置已移动距离
+            twist = Twist()
+            twist.linear.x = 0.2  # 设定速度
+            rospy.Timer(rospy.Duration(0.1), self.update_movement, oneshot=False)  # 每0.1秒调用一次update_movement
 
-        while rospy.Time.now() - start_time < rospy.Duration(move_time):
+    def update_movement(self, event):
+        if self.current_distance < self.distance_target:
+            self.current_distance += 0.02  # 假设每次调用移动0.02米
+            twist = Twist()
+            twist.linear.x = 0.2
+            self.cmd_vel_pub.publish(twist)  # 发送速度命令
+        else:
+            rospy.loginfo("Reached target distance.")
+            twist = Twist()
+            twist.linear.x = 0  # 停止移动
             self.cmd_vel_pub.publish(twist)
-            rate.sleep()
-
-        # Stop the robot
-        twist.linear.x = 0
-        self.cmd_vel_pub.publish(twist)
+            self.moving = False  # 更新移动状态为停止
 
 def handle_viz_input(input, robot_controller):
     if input.event_type == InteractiveMarkerFeedback.BUTTON_CLICK:
