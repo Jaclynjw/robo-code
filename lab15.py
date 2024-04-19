@@ -1,69 +1,79 @@
 #!/usr/bin/env python
 import rospy
 from interactive_markers.interactive_marker_server import InteractiveMarkerServer
-from interactive_markers.menu_handler import MenuHandler
-from visualization_msgs.msg import InteractiveMarker, InteractiveMarkerControl, Marker
-from geometry_msgs.msg import Point
+from visualization_msgs.msg import InteractiveMarker, InteractiveMarkerControl, InteractiveMarkerFeedback
+from visualization_msgs.msg import Marker
+from geometry_msgs.msg import Twist
 
-from base import Base  # Assuming Base class is defined as previously discussed
+class RobotController:
+    def __init__(self):
+        self.cmd_vel_pub = rospy.Publisher('cmd_vel', Twist, queue_size=1)
 
-def make_button_marker(position, name, description):
+    def move_forward(self, distance, speed=0.1):
+        """Sends a simple motion command to move forward a specified distance."""
+        move_time = distance / speed
+        twist = Twist()
+        twist.linear.x = speed
+        rate = rospy.Rate(10)  # 10 Hz
+        start_time = rospy.Time.now()
+
+        while rospy.Time.now() - start_time < rospy.Duration(move_time):
+            self.cmd_vel_pub.publish(twist)
+            rate.sleep()
+
+        # Stop the robot
+        twist.linear.x = 0
+        self.cmd_vel_pub.publish(twist)
+
+def handle_viz_input(input, robot_controller):
+    if input.event_type == InteractiveMarkerFeedback.BUTTON_CLICK:
+        rospy.loginfo(input.marker_name + ' was clicked.')
+        robot_controller.move_forward(0.5)  # Move forward 0.5 meters
+    else:
+        rospy.loginfo('Cannot handle this InteractiveMarker event')
+
+def main():
+    rospy.init_node('interactive_marker_demo')
+
+    # Create an Interactive Marker Server on the specified topic
+    server = InteractiveMarkerServer("simple_marker")
+    robot_controller = RobotController()
+
+    # Create an Interactive Marker
     int_marker = InteractiveMarker()
     int_marker.header.frame_id = "base_link"
-    int_marker.pose.position = position
-    int_marker.scale = 0.2
+    int_marker.name = "my_marker"
+    int_marker.description = "Simple Click Control"
+    int_marker.pose.position.x = 1
+    int_marker.pose.orientation.w = 1
 
-    int_marker.name = name
-    int_marker.description = description
-
-    button_control = InteractiveMarkerControl()
-    button_control.interaction_mode = InteractiveMarkerControl.BUTTON
-    button_control.always_visible = True
-
+    # Create a teal cube Marker for the InteractiveMarker
     box_marker = Marker()
     box_marker.type = Marker.CUBE
-    box_marker.scale.x = 0.15
-    box_marker.scale.y = 0.15
-    box_marker.scale.z = 0.15
-    box_marker.color.r = 0.5
+    box_marker.pose.orientation.w = 1
+    box_marker.scale.x = 0.45
+    box_marker.scale.y = 0.45
+    box_marker.scale.z = 0.45
+    box_marker.color.r = 0.0
     box_marker.color.g = 0.5
     box_marker.color.b = 0.5
     box_marker.color.a = 1.0
 
+    # Create an InteractiveMarkerControl, add the Marker to it, and add the control to the InteractiveMarker
+    button_control = InteractiveMarkerControl()
+    button_control.interaction_mode = InteractiveMarkerControl.BUTTON
+    button_control.always_visible = True
     button_control.markers.append(box_marker)
     int_marker.controls.append(button_control)
 
-    return int_marker
+    # Add the InteractiveMarker to the server with the callback information
+    server.insert(int_marker, lambda feedback: handle_viz_input(feedback, robot_controller))
 
-def handle_marker_feedback(feedback):
-    command = feedback.marker_name
-    print(f"Handling {command}")
-    if command == "forward":
-        base.go_forward(0.5)  # Move forward by 0.5 meters
-    elif command == "turn_left":
-        base.turn(math.radians(30))  # Turn left by 30 degrees
-    elif command == "turn_right":
-        base.turn(math.radians(-30))  # Turn right by 30 degrees
-
-if __name__ == "__main__":
-    rospy.init_node("interactive_robot_control")
-
-    base = Base()
-
-    server = InteractiveMarkerServer("base_marker_control")
-
-    forward_position = Point(0.6, 0, 0)  # Forward button in front of the robot
-    turn_left_position = Point(0, 0.3, 0)  # Turn left button to the left of the robot
-    turn_right_position = Point(0, -0.3, 0)  # Turn right button to the right of the robot
-
-    forward_marker = make_button_marker(forward_position, "forward", "Move Forward")
-    turn_left_marker = make_button_marker(turn_left_position, "turn_left", "Turn Left")
-    turn_right_marker = make_button_marker(turn_right_position, "turn_right", "Turn Right")
-
-    server.insert(forward_marker, handle_marker_feedback)
-    server.insert(turn_left_marker, handle_marker_feedback)
-    server.insert(turn_right_marker, handle_marker_feedback)
-
+    # Apply changes to the server to make everything visible
     server.applyChanges()
 
+    # Keep the node running
     rospy.spin()
+
+if __name__ == "__main__":
+    main()
