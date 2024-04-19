@@ -1,106 +1,69 @@
 #!/usr/bin/env python
-
 import rospy
-import copy
-import math
-from nav_msgs.msg import Odometry
-from geometry_msgs.msg import Twist
+from interactive_markers.interactive_marker_server import InteractiveMarkerServer
+from interactive_markers.menu_handler import MenuHandler
+from visualization_msgs.msg import InteractiveMarker, InteractiveMarkerControl, Marker
+from geometry_msgs.msg import Point
 
-class Base(object):
-    def __init__(self):
-        # Initialize the ROS node
-        rospy.init_node('robot_base_controller')
-        self._odom_sub = rospy.Subscriber('odom', Odometry, callback=self._odom_callback)
-        self._vel_pub = rospy.Publisher('cmd_vel', Twist, queue_size=10)
-        self.current_odom = None
+from base import Base  # Assuming Base class is defined as previously discussed
 
-    def _odom_callback(self, msg):
-        """Odometry callback function."""
-        self.current_odom = msg
+def make_button_marker(position, name, description):
+    int_marker = InteractiveMarker()
+    int_marker.header.frame_id = "base_link"
+    int_marker.pose.position = position
+    int_marker.scale = 0.2
 
-    def go_forward(self, distance, speed=0.1):
-        """Moves the robot a certain distance."""
-        rospy.loginfo("Starting to move forward")
-        # Wait until the base has received at least one message on /odom
-        while self.current_odom is None and not rospy.is_shutdown():
-            rospy.sleep(0.1)
+    int_marker.name = name
+    int_marker.description = description
 
-        # Record start position using deepcopy to avoid referencing the same object
-        start = copy.deepcopy(self.current_odom.pose.pose.position)
-        rate = rospy.Rate(10)  # 10 Hz
+    button_control = InteractiveMarkerControl()
+    button_control.interaction_mode = InteractiveMarkerControl.BUTTON
+    button_control.always_visible = True
 
-        while not rospy.is_shutdown():
-            current_position = self.current_odom.pose.pose.position
-            dx = current_position.x - start.x
-            dy = current_position.y - start.y
-            current_distance = math.sqrt(dx**2 + dy**2)  # Euclidean distance
+    box_marker = Marker()
+    box_marker.type = Marker.CUBE
+    box_marker.scale.x = 0.15
+    box_marker.scale.y = 0.15
+    box_marker.scale.z = 0.15
+    box_marker.color.r = 0.5
+    box_marker.color.g = 0.5
+    box_marker.color.b = 0.5
+    box_marker.color.a = 1.0
 
-            if current_distance >= abs(distance):
-                break
+    button_control.markers.append(box_marker)
+    int_marker.controls.append(button_control)
 
-            direction = math.copysign(1, distance)  # Positive for forward, negative for backward
-            self.move(direction * speed, 0)
-            rate.sleep()
+    return int_marker
 
-        self.move(0, 0)  # Stop the robot after moving
+def handle_marker_feedback(feedback):
+    command = feedback.marker_name
+    print(f"Handling {command}")
+    if command == "forward":
+        base.go_forward(0.5)  # Move forward by 0.5 meters
+    elif command == "turn_left":
+        base.turn(math.radians(30))  # Turn left by 30 degrees
+    elif command == "turn_right":
+        base.turn(math.radians(-30))  # Turn right by 30 degrees
 
-    def turn(self, angular_distance, speed=0.5):
-        """Rotates the robot a certain angle."""
-        rospy.loginfo("Starting to turn")
-        while self.current_odom is None and not rospy.is_shutdown():
-            rospy.sleep(0.1)
+if __name__ == "__main__":
+    rospy.init_node("interactive_robot_control")
 
-        start_yaw = self.get_yaw_from_odom(self.current_odom.pose.pose.orientation)
-        rate = rospy.Rate(10)  # 10 Hz
+    base = Base()
 
-        while not rospy.is_shutdown():
-            current_yaw = self.get_yaw_from_odom(self.current_odom.pose.pose.orientation)
-            yaw_diff = (current_yaw - start_yaw + 2 * math.pi) % (2 * math.pi)
+    server = InteractiveMarkerServer("base_marker_control")
 
-            if abs(yaw_diff) >= abs(angular_distance % (2 * math.pi)):
-                break
+    forward_position = Point(0.6, 0, 0)  # Forward button in front of the robot
+    turn_left_position = Point(0, 0.3, 0)  # Turn left button to the left of the robot
+    turn_right_position = Point(0, -0.3, 0)  # Turn right button to the right of the robot
 
-            direction = math.copysign(1, angular_distance)  # Positive for counterclockwise, negative for clockwise
-            self.move(0, direction * speed)
-            rate.sleep()
+    forward_marker = make_button_marker(forward_position, "forward", "Move Forward")
+    turn_left_marker = make_button_marker(turn_left_position, "turn_left", "Turn Left")
+    turn_right_marker = make_button_marker(turn_right_position, "turn_right", "Turn Right")
 
-        self.move(0, 0)  # Stop the robot after rotation
+    server.insert(forward_marker, handle_marker_feedback)
+    server.insert(turn_left_marker, handle_marker_feedback)
+    server.insert(turn_right_marker, handle_marker_feedback)
 
-    def move(self, linear_speed, angular_speed):
-        """Send velocity commands to the robot."""
-        twist = Twist()
-        twist.linear.x = linear_speed
-        twist.angular.z = angular_speed
-        self._vel_pub.publish(twist)
+    server.applyChanges()
 
-    def get_yaw_from_odom(self, odom_orientation):
-        """Extracts the yaw angle from an odometry message's orientation."""
-        quaternion = (
-            odom_orientation.x,
-            odom_orientation.y,
-            odom_orientation.z,
-            odom_orientation.w
-        )
-        _, _, yaw = euler_from_quaternion(quaternion)
-        return yaw
-
-def euler_from_quaternion(quat):
-    """Convert quaternion (x, y, z, w) to euler angles."""
-    x, y, z, w = quat
-    t0 = +2.0 * (w * x + y * z)
-    t1 = +1.0 - 2.0 * (x * x + y * y)
-    roll_x = math.atan2(t0, t1)
-
-    t2 = +2.0 * (w * y - z * x)
-    t2 = +1.0 if t2 > +1.0 else t2
-    t2 = -1.0 if t2 < -1.0 else t2
-    pitch_y = math.asin(t2)
-
-    t3 = +2.0 * (w * z + x * y)
-    t4 = +1.0 - 2.0 * (y * y + z * z)
-    yaw_z = math.atan2(t3, t4)
-
-    return roll_x, pitch_y, yaw_z
-
-if __name__ == '__main__':
     rospy.spin()
