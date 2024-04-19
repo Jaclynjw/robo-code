@@ -1,104 +1,106 @@
 #!/usr/bin/env python
+
 import rospy
-from interactive_markers.interactive_marker_server import InteractiveMarkerServer
-from interactive_markers.menu_handler import MenuHandler
-from visualization_msgs.msg import InteractiveMarker, InteractiveMarkerControl, InteractiveMarkerFeedback
-from visualization_msgs.msg import Marker
+import copy
+import math
+from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Twist
 
-class RobotController:
+class Base(object):
     def __init__(self):
-        rospy.init_node('robot_control_markers')
+        # Initialize the ROS node
+        rospy.init_node('robot_base_controller')
+        self._odom_sub = rospy.Subscriber('odom', Odometry, callback=self._odom_callback)
+        self._vel_pub = rospy.Publisher('cmd_vel', Twist, queue_size=10)
+        self.current_odom = None
 
-        # Publisher for moving the robot
-        self.vel_pub = rospy.Publisher('cmd_vel', Twist, queue_size=1)
+    def _odom_callback(self, msg):
+        """Odometry callback function."""
+        self.current_odom = msg
 
-        # Create an interactive marker server on the topic namespace simple_marker
-        self.server = InteractiveMarkerServer("simple_marker")
+    def go_forward(self, distance, speed=0.1):
+        """Moves the robot a certain distance."""
+        rospy.loginfo("Starting to move forward")
+        # Wait until the base has received at least one message on /odom
+        while self.current_odom is None and not rospy.is_shutdown():
+            rospy.sleep(0.1)
 
-        # Create interactive markers
-        self.create_interactive_markers()
+        # Record start position using deepcopy to avoid referencing the same object
+        start = copy.deepcopy(self.current_odom.pose.pose.position)
+        rate = rospy.Rate(10)  # 10 Hz
 
-        # Apply changes to the server
-        self.server.applyChanges()
+        while not rospy.is_shutdown():
+            current_position = self.current_odom.pose.pose.position
+            dx = current_position.x - start.x
+            dy = current_position.y - start.y
+            current_distance = math.sqrt(dx**2 + dy**2)  # Euclidean distance
 
-    def create_interactive_markers(self):
-        # Forward movement marker
-        forward_marker = InteractiveMarker()
-        forward_marker.header.frame_id = "base_link"
-        forward_marker.name = "move_forward"
-        forward_marker.description = "Move Forward"
-        forward_marker.pose.position.x = 1.0  # Position ahead of the robot base
+            if current_distance >= abs(distance):
+                break
 
-        # Marker for moving forward
-        box = Marker()
-        box.type = Marker.CUBE
-        box.scale.x = 0.2
-        box.scale.y = 0.2
-        box.scale.z = 0.2
-        box.color.r = 0.0
-        box.color.g = 1.0
-        box.color.b = 0.0
-        box.color.a = 1.0
+            direction = math.copysign(1, distance)  # Positive for forward, negative for backward
+            self.move(direction * speed, 0)
+            rate.sleep()
 
-        box_control = InteractiveMarkerControl()
-        box_control.always_visible = True
-        box_control.markers.append(box)
-        box_control.interaction_mode = InteractiveMarkerControl.BUTTON
-        forward_marker.controls.append(box_control)
+        self.move(0, 0)  # Stop the robot after moving
 
-        # Rotation markers
-        self.create_rotation_marker("turn_left", 0.5, 0.0, "Rotate Left", True)
-        self.create_rotation_marker("turn_right", -0.5, 0.0, "Rotate Right", False)
+    def turn(self, angular_distance, speed=0.5):
+        """Rotates the robot a certain angle."""
+        rospy.loginfo("Starting to turn")
+        while self.current_odom is None and not rospy.is_shutdown():
+            rospy.sleep(0.1)
 
-        # Add the forward movement marker to the server
-        self.server.insert(forward_marker, self.process_feedback)
+        start_yaw = self.get_yaw_from_odom(self.current_odom.pose.pose.orientation)
+        rate = rospy.Rate(10)  # 10 Hz
 
-    def create_rotation_marker(self, name, position_y, position_x, description, counter_clockwise):
-        rotation_marker = InteractiveMarker()
-        rotation_marker.header.frame_id = "base_link"
-        rotation_marker.name = name
-        rotation_marker.description = description
-        rotation_marker.pose.position.y = position_y
-        rotation_marker.pose.position.x = position_x
+        while not rospy.is_shutdown():
+            current_yaw = self.get_yaw_from_odom(self.current_odom.pose.pose.orientation)
+            yaw_diff = (current_yaw - start_yaw + 2 * math.pi) % (2 * math.pi)
 
-        # Marker for rotation
-        cylinder = Marker()
-        cylinder.type = Marker.CYLINDER
-        cylinder.scale.x = 0.2
-        cylinder.scale.y = 0.2
-        cylinder.scale.z = 0.2
-        cylinder.color.r = 0.0
-        cylinder.color.g = 0.0
-        cylinder.color.b = 1.0
-        cylinder.color.a = 1.0
+            if abs(yaw_diff) >= abs(angular_distance % (2 * math.pi)):
+                break
 
-        cylinder_control = InteractiveMarkerControl()
-        cylinder_control.always_visible = True
-        cylinder_control.markers.append(cylinder)
-        cylinder_control.interaction_mode = InteractiveMarkerControl.BUTTON
-        rotation_marker.controls.append(cylinder_control)
+            direction = math.copysign(1, angular_distance)  # Positive for counterclockwise, negative for clockwise
+            self.move(0, direction * speed)
+            rate.sleep()
 
-        # Add to server
-        self.server.insert(rotation_marker, self.process_feedback)
+        self.move(0, 0)  # Stop the robot after rotation
 
-    def process_feedback(self, feedback):
+    def move(self, linear_speed, angular_speed):
+        """Send velocity commands to the robot."""
         twist = Twist()
-        if feedback.marker_name == "move_forward":
-            twist.linear.x = 0.5  # Move forward half a meter
-        elif feedback.marker_name == "turn_left":
-            twist.angular.z = 0.5236  # Rotate 30 degrees counter-clockwise
-        elif feedback.marker_name == "turn_right":
-            twist.angular.z = -0.5236  # Rotate 30 degrees clockwise
+        twist.linear.x = linear_speed
+        twist.angular.z = angular_speed
+        self._vel_pub.publish(twist)
 
-        self.vel_pub.publish(twist)
+    def get_yaw_from_odom(self, odom_orientation):
+        """Extracts the yaw angle from an odometry message's orientation."""
+        quaternion = (
+            odom_orientation.x,
+            odom_orientation.y,
+            odom_orientation.z,
+            odom_orientation.w
+        )
+        _, _, yaw = euler_from_quaternion(quaternion)
+        return yaw
 
-def main():
-    try:
-        RobotController()
-        rospy.spin()
-    except rospy.ROSInterruptException:
-        pass
+def euler_from_quaternion(quat):
+    """Convert quaternion (x, y, z, w) to euler angles."""
+    x, y, z, w = quat
+    t0 = +2.0 * (w * x + y * z)
+    t1 = +1.0 - 2.0 * (x * x + y * y)
+    roll_x = math.atan2(t0, t1)
+
+    t2 = +2.0 * (w * y - z * x)
+    t2 = +1.0 if t2 > +1.0 else t2
+    t2 = -1.0 if t2 < -1.0 else t2
+    pitch_y = math.asin(t2)
+
+    t3 = +2.0 * (w * z + x * y)
+    t4 = +1.0 - 2.0 * (y * y + z * z)
+    yaw_z = math.atan2(t3, t4)
+
+    return roll_x, pitch_y, yaw_z
 
 if __name__ == '__main__':
-    main()
+    rospy.spin()
